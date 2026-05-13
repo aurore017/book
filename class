@@ -1,0 +1,162 @@
+import datetime
+import json
+import uuid
+import os
+import inspect
+
+
+class BaseModel:
+    def __init__(self):
+        self.id = str(uuid.uuid4())
+        self.created_at = datetime.datetime.now().isoformat()
+        self.updated_at = datetime.datetime.now().isoformat()
+
+    def to_dict(self) -> dict:
+        return self.__dict__.copy()
+
+    @classmethod
+    def from_dict(cls, data: dict):
+        obj = cls.__new__(cls)
+        obj.__dict__.update(data)
+        return obj
+
+    def _detect_var_name(self) -> str | None:
+        SKIP_NAMES = {"self", "cls"}
+        frame = inspect.currentframe()
+        try:
+            while frame is not None:
+                frame = frame.f_back
+                if frame is None:
+                    break
+                if frame.f_locals.get("self") is self:
+                    continue
+                for scope in (frame.f_locals, frame.f_globals):
+                    for name, val in scope.items():
+                        if val is self and name not in SKIP_NAMES and not name.startswith("_"):
+                            return name
+        finally:
+            del frame
+        return None
+
+    def _individual_filename(self, var_name: str) -> str:
+        return f"{var_name}.json"
+
+    def _load_existing(self, filepath: str) -> dict | None:
+        if os.path.exists(filepath):
+            with open(filepath, "r") as f:
+                return json.load(f)
+        return None
+
+    def _has_changed(self, existing: dict) -> bool:
+        current = self.to_dict()
+        skip = {"updated_at"}
+        return any(
+            current.get(k) != existing.get(k)
+            for k in set(current) | set(existing)
+            if k not in skip
+        )
+
+    def _store_filename(self) -> str:
+        return f"{self.__class__.__name__}_store.json"
+
+    def _load_store(self) -> dict:
+        path = self._store_filename()
+        if os.path.exists(path):
+            with open(path, "r") as f:
+                return json.load(f)
+        return {}
+
+    def _write_store(self, store: dict):
+        with open(self._store_filename(), "w") as f:
+            json.dump(store, f, indent=4)
+
+    def save(self):
+        var_name = self._detect_var_name()
+        if var_name is None:
+            var_name = f"{self.__class__.__name__}_{self.id[:8]}"
+            print(f"[warn] Could not detect variable name; using '{var_name}'")
+
+        filepath = self._individual_filename(var_name)
+        existing = self._load_existing(filepath)
+
+        if existing is not None:
+            if self._has_changed(existing):
+                self.updated_at = datetime.datetime.now().isoformat()
+                print(f"[{var_name}] Changes detected → updating {filepath}")
+            else:
+                print(f"[{var_name}] No changes detected → skipping {filepath}")
+                self._upsert_store()
+                return
+        else:
+            print(f"[{var_name}] New object → creating {filepath}")
+
+        with open(filepath, "w") as f:
+            json.dump(self.to_dict(), f, indent=4)
+
+        self._upsert_store()
+
+    def _upsert_store(self):
+        store = self._load_store()
+        store[self.id] = self.to_dict()
+        self._write_store(store)
+        print(f"[store] {self._store_filename()} updated ({len(store)} record(s) total)")
+
+
+class Book(BaseModel):
+    def __init__(self, title: str, author: str, year: int,
+                 genre: str, is_borrowed: bool = False):
+        super().__init__()
+        self.title = title
+        self.author = author
+        self.year = year
+        self.genre = genre
+        self.is_borrowed = is_borrowed
+
+    def __repr__(self):
+        status = "borrowed" if self.is_borrowed else "available"
+        return f"<Book '{self.title}' by {self.author} [{status}]>"
+
+
+class User(BaseModel):
+    def __init__(self, name: str, user_id: str):
+        super().__init__()
+        self.name = name
+        self.user_id = user_id
+
+    def borrow_book(self, book: Book):
+        if not book.is_borrowed:
+            book.is_borrowed = True
+            book.updated_at = datetime.datetime.now().isoformat()
+            print(f"'{book.title}' borrowed by {self.name}")
+        else:
+            print(f"'{book.title}' is not available")
+
+    def __repr__(self):
+        return f"<User '{self.name}' (id={self.user_id})>"
+
+
+if __name__ == "__main__":
+    book1 = Book("Python Crash Course", "Eric Matthes", 2020, "Programming")
+    book2 = Book("Clean Code", "Robert Martin", 2008, "Software Engineering")
+    book3 = Book("The Pragmatic Programmer", "Hunt & Thomas", 1999, "Software Engineering")
+
+    user1 = User("John", "usr-001")
+    user2 = User("Jane", "usr-002")
+    user3 = User("Bob", "usr-003")
+
+    user1.borrow_book(book1)
+    user2.borrow_book(book2)
+    user3.borrow_book(book3)
+    user1.borrow_book(book2)
+
+    book1.save()
+    book2.save()
+    book3.save()
+    user1.save()
+    user2.save()
+    user3.save()
+
+    book1.title = "Python Crash Course (2nd Edition)"
+    book1.save()
+
+    user2.save()
